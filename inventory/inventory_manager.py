@@ -15,9 +15,10 @@ callers always see a consistent view.
 from dataclasses import replace
 from decimal import Decimal
 
+from .exceptions import DuplicateSKUError, InsufficientStockError, ProductNotFoundError, ValidationError
 from .hash_table import HashTable
 from .indexed_heap import IndexedMinHeap
-from .product import Product
+from .product import Product, to_count, to_price
 from .skip_list import SkipList
 
 
@@ -34,8 +35,10 @@ class InventoryManager:
 
     def add_product(self, product):
         """Add a new product to every index. O(log n) expected."""
+        if not isinstance(product, Product):
+            raise ValidationError(f"expected a Product, got {type(product).__name__}")
         if product.sku in self._products:
-            raise KeyError(f"SKU {product.sku!r} already exists")
+            raise DuplicateSKUError(product.sku)
         self._products.put(product.sku, product)
         self._by_price.insert((product.price, product.sku))
         self._category_set(product.category).add(product.sku)
@@ -44,7 +47,8 @@ class InventoryManager:
 
     def remove_product(self, sku):
         """Remove a product from every index and return it. O(log n) expected."""
-        product = self._products.remove(sku)
+        product = self._require(sku)
+        self._products.remove(sku)
         self._by_price.remove((product.price, sku))
         self._discard_from_category(product.category, sku)
         self._stock.remove(sku)
@@ -58,10 +62,12 @@ class InventoryManager:
         Apply a stock movement: positive for receiving, negative for sales.
         Rejects changes that would make quantity negative. O(log n).
         """
-        product = self._products[sku]
+        if isinstance(delta, bool) or not isinstance(delta, int):
+            raise ValidationError(f"quantity change must be a whole number, got {delta!r}")
+        product = self._require(sku)
         new_qty = product.quantity + delta
         if new_qty < 0:
-            raise ValueError(f"insufficient stock for {sku}: have {product.quantity}, need {-delta}")
+            raise InsufficientStockError(sku, product.quantity, -delta)
         updated = replace(product, quantity=new_qty)
         self._products.put(sku, updated)
         self._stock.update(sku, updated.stock_gap)
@@ -70,7 +76,7 @@ class InventoryManager:
 
     def update_price(self, sku, new_price):
         """Change a price and move the product in the price index. O(log n) expected."""
-        product = self._products[sku]
+        product = self._require(sku)
         updated = replace(product, price=new_price)
         self._by_price.remove((product.price, sku))
         self._by_price.insert((updated.price, sku))
@@ -80,7 +86,7 @@ class InventoryManager:
 
     def change_category(self, sku, new_category):
         """Move a product to another category. O(1) average."""
-        product = self._products[sku]
+        product = self._require(sku)
         if new_category == product.category:
             return product
         updated = replace(product, category=new_category)
@@ -91,7 +97,7 @@ class InventoryManager:
 
     def set_reorder_point(self, sku, reorder_point):
         """Change when a product should be reordered. O(log n)."""
-        updated = replace(self._products[sku], reorder_point=reorder_point)
+        updated = replace(self._require(sku), reorder_point=reorder_point)
         self._products.put(sku, updated)
         self._stock.update(sku, updated.stock_gap)
         return updated
@@ -100,7 +106,7 @@ class InventoryManager:
 
     def get(self, sku):
         """Look up a product by SKU. O(1) average."""
-        return self._products[sku]
+        return self._require(sku)
 
     def products_in_category(self, category):
         """All products in a category, sorted by SKU. O(k log k)."""
@@ -112,7 +118,9 @@ class InventoryManager:
 
     def products_in_price_range(self, low, high):
         """Products with low <= price <= high, cheapest first. O(log n + k)."""
-        low, high = Decimal(str(low)), Decimal(str(high))
+        low, high = to_price(low, "low"), to_price(high, "high")
+        if low > high:
+            raise ValidationError(f"low ({low}) is greater than high ({high})")
         result = []
         for (price, sku), _ in self._by_price.iter_from((low, "")):
             if price > high:
@@ -122,6 +130,7 @@ class InventoryManager:
 
     def cheapest(self, k=1):
         """The k lowest-priced products. O(k)."""
+        to_count(k, "k")
         result = []
         for (_, sku), _ in self._by_price:
             if len(result) == k:
@@ -136,7 +145,10 @@ class InventoryManager:
         return [self._products[sku] for sku, _ in hits]
 
     def most_urgent(self):
-        """The product closest to (or furthest below) its reorder point. O(1)."""
+        """The product closest to (or furthest below) its reorder point, or
+        None if the inventory is empty. O(1)."""
+        if not len(self._stock):
+            return None
         sku, _ = self._stock.peek()
         return self._products[sku]
 
@@ -152,6 +164,13 @@ class InventoryManager:
         return len(self._products)
 
     # -- helpers --------------------------------------------------------------
+
+    def _require(self, sku):
+        """Return the product for sku or raise ProductNotFoundError. O(1) average."""
+        product = self._products.get(sku) if isinstance(sku, str) else None
+        if product is None:
+            raise ProductNotFoundError(sku)
+        return product
 
     def _category_set(self, category):
         skus = self._categories.get(category)
