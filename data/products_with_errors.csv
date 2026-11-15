@@ -1,0 +1,8 @@
+sku,name,category,price,quantity,reorder_point
+GLU-700,Glue Sticks (4),Office,3.99,25,10
+,Mystery Item,Office,1.00,1,0
+BAD-710,Bad Price,Office,abc,5,1
+NEG-720,Negative Qty,Office,2.00,-3,1
+CNT-730,Fraction of a cent,Office,2.005,4,1
+PEN-300,Duplicate Pens,Office,8.99,10,5
+SCI-740,Scissors,Office,5.49,15,5

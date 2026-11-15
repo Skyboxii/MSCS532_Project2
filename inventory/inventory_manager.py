@@ -59,6 +59,18 @@ class InventoryManager:
         self._total_value = Decimal("0")    # running sum of price * quantity
         self._tx = None                     # the active _UndoLog, if any
 
+    def transaction(self):
+        """
+        Public all-or-nothing block:
+
+            with inventory.transaction():
+                inventory.adjust_quantity("A", -2)
+                inventory.adjust_quantity("B", +2)
+
+        If anything inside raises, every change made inside is undone.
+        """
+        return self._atomic()
+
     @contextmanager
     def _atomic(self):
         """

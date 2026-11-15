@@ -1,5 +1,7 @@
 """Dynamic inventory management data structures (MSCS 532 project)."""
 
+from .batch import (BatchResult, StockMovement, apply_movements, import_products,
+                    read_movements, read_products)
 from .exceptions import (DuplicateSKUError, InsufficientStockError, InventoryError,
                          ProductNotFoundError, ValidationError)
 from .hash_table import HashTable
@@ -11,5 +13,6 @@ from .skip_list import SkipList
 __all__ = [
     "HashTable", "IndexedMinHeap", "InventoryManager", "Product", "SkipList",
     "InventoryError", "ValidationError", "ProductNotFoundError", "DuplicateSKUError",
-    "InsufficientStockError",
+    "InsufficientStockError", "BatchResult", "StockMovement", "apply_movements",
+    "import_products", "read_movements", "read_products",
 ]
