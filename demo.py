@@ -1,53 +1,92 @@
 """
-Walk through a day of inventory activity using InventoryManager.
+Scripted demonstration of the inventory proof of concept.
 
-Usage:  python demo.py
+Runs a day of inventory activity through the same command shell as cli.py,
+printing each command before its output, so the demo exercises exactly the
+code a user would.  Each section names the data structure doing the work.
+
+Usage:  python demo.py                 (output is also saved to docs/demo_output.txt)
 """
 
-from inventory import InventoryManager, Product
+import io
+import os
+import sys
+
+from cli import InventoryShell
+
+SCRIPT = [
+    ("1. Load the catalog (CSV import into all five indexes)", [
+        "load data/products.csv",
+        "value",
+        "categories",
+    ]),
+    ("2. Search: hash table, price skip list, name skip list, category index", [
+        "get LAP-100",
+        "range 20 50",
+        'find "desk"',
+        "category Furniture",
+        "cheapest 3",
+    ]),
+    ("3. Dynamic updates", [
+        "sell PEN-300 30",
+        "receive CHR-400 6",
+        "price LMP-420 29.95",
+        "move MUG-600 Apparel",
+        'rename HDM-220 "HDMI Cable 10ft"',
+        'add USB-900 "USB Flash Drive 64GB" Electronics 14.99 30 10',
+        "remove CAB-440",
+        "value",
+    ]),
+    ("4. Low-stock report (indexed min-heap, most urgent first)", [
+        "lowstock",
+        "sell NBK-310 25",
+        "lowstock",
+    ]),
+    ("5. Edge cases and error handling (nothing changes after an error)", [
+        "value",
+        "sell CHR-400 99",
+        "get NOPE-000",
+        "price LAP-100 -5",
+        "price LAP-100 9.999",
+        "add LAP-100 Duplicate Electronics 1.00 1",
+        "add BAD-001 Widget",
+        "sell PEN-300 two",
+        "range 50 10",
+        'find ""',
+        "category Nonexistent",
+        "load data/missing_file.csv",
+        "value",
+    ]),
+    ("6. Batch of stock movements with bad rows (reject-and-continue)", [
+        "movements data/movements.csv",
+    ]),
+    ("7. Same file again as one all-or-nothing transaction (rolled back)", [
+        "value",
+        "movements data/movements.csv all",
+        "value",
+    ]),
+    ("8. Import a file with bad rows, then check every index agrees", [
+        "load data/products_with_errors.csv",
+        "verify",
+    ]),
+]
 
 
-def show(title, products):
-    print(f"\n{title}")
-    for p in products:
-        print(f"  {p.sku:8} {p.name:18} {p.category:12} ${p.price:>8}  qty {p.quantity:>4}"
-              f"  (reorder at {p.reorder_point})")
-
-
-def main():
-    inv = InventoryManager(seed=532)
-    for p in (
-        Product("LAP-100", "Laptop 14in", "Electronics", "899.99", 12, reorder_point=5),
-        Product("MOU-200", "Wireless Mouse", "Electronics", "24.50", 3, reorder_point=10),
-        Product("HDM-210", "HDMI Cable", "Electronics", "12.00", 45, reorder_point=15),
-        Product("PEN-300", "Gel Pens (12)", "Office", "8.99", 140, reorder_point=50),
-        Product("NBK-500", "Notebook", "Office", "3.25", 60, reorder_point=40),
-        Product("CHR-400", "Desk Chair", "Furniture", "149.00", 0, reorder_point=2),
-        Product("LMP-410", "Desk Lamp", "Furniture", "39.95", 8, reorder_point=4),
-    ):
-        inv.add_product(p)
-
-    print(f"Loaded {len(inv)} products, total value ${inv.total_value:,.2f}")
-    show("Needs reorder (most urgent first):", inv.low_stock())
-    show("Priced $10-$50:", inv.products_in_price_range(10, 50))
-
-    print("\n-- Receive 40 mice, sell 25 notebooks, mark down the lamp, move pens to Supplies --")
-    inv.adjust_quantity("MOU-200", 40)
-    inv.adjust_quantity("NBK-500", -25)
-    inv.update_price("LMP-410", "29.95")
-    inv.change_category("PEN-300", "Supplies")
-
-    show("Needs reorder (most urgent first):", inv.low_stock())
-    show("Priced $10-$50:", inv.products_in_price_range(10, 50))
-    show("Supplies category:", inv.products_in_category("Supplies"))
-    print(f"\nCategories: {', '.join(inv.categories())}")
-    print(f"Total value ${inv.total_value:,.2f}")
-
-    try:
-        inv.adjust_quantity("CHR-400", -1)
-    except ValueError as e:
-        print(f"\nRejected sale: {e}")
+def run(out):
+    shell = InventoryShell(stdout=out)
+    for title, commands in SCRIPT:
+        out.write(f"\n=== {title} ===\n")
+        for line in commands:
+            out.write(f"{shell.prompt}{line}\n")
+            shell.onecmd(line)
 
 
 if __name__ == "__main__":
-    main()
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))      # data/ paths are relative
+    buffer = io.StringIO()
+    run(buffer)
+    text = buffer.getvalue()
+    sys.stdout.write(text)
+    os.makedirs("docs", exist_ok=True)
+    with open(os.path.join("docs", "demo_output.txt"), "w", encoding="utf-8") as f:
+        f.write(text)

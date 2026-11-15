@@ -1,0 +1,142 @@
+
+=== 1. Load the catalog (CSV import into all five indexes) ===
+inventory> load data/products.csv
+  25 succeeded, 0 failed
+inventory> value
+  25 products, total value $29,446.70
+inventory> categories
+  Apparel          3 products
+  Electronics      8 products
+  Furniture        5 products
+  Gifts            2 products
+  Office           7 products
+
+=== 2. Search: hash table, price skip list, name skip list, category index ===
+inventory> get LAP-100
+  SKU       Name                   Category         Price   Qty  Reorder
+  LAP-100   Laptop 14in            Electronics    $899.99    12        5
+inventory> range 20 50
+  SKU       Name                   Category         Price   Qty  Reorder
+  CAP-520   Baseball Cap           Apparel         $22.00    16        8
+  BTL-610   Water Bottle           Gifts           $24.00     6       10
+  MOU-200   Wireless Mouse         Electronics     $24.50     3       10
+  LMP-420   Desk Lamp              Furniture       $39.95     8        4
+  USB-230   USB-C Hub              Electronics     $39.95     7        6
+  HOD-500   Campus Hoodie          Apparel         $44.99    30       12
+  KEY-210   Wireless Keyboard      Electronics     $49.99    14        8
+inventory> find "desk"
+  SKU       Name                   Category         Price   Qty  Reorder
+  CHR-400   Desk Chair             Furniture      $149.00     0        2
+  LMP-420   Desk Lamp              Furniture       $39.95     8        4
+inventory> category Furniture
+  SKU       Name                   Category         Price   Qty  Reorder
+  CAB-440   Filing Cabinet         Furniture      $159.00     2        2
+  CHR-400   Desk Chair             Furniture      $149.00     0        2
+  DSK-410   Standing Desk          Furniture      $429.00     3        2
+  LMP-420   Desk Lamp              Furniture       $39.95     8        4
+  SHF-430   Bookshelf              Furniture       $89.00     5        2
+inventory> cheapest 3
+  SKU       Name                   Category         Price   Qty  Reorder
+  NBK-310   Notebook               Office           $3.25    60       40
+  TAP-360   Packing Tape           Office           $4.99    12       15
+  HIG-350   Highlighters (6)       Office           $6.49    35       20
+
+=== 3. Dynamic updates ===
+inventory> sell PEN-300 30
+  SKU       Name                   Category         Price   Qty  Reorder
+  PEN-300   Gel Pens (12)          Office           $8.99   110       50
+inventory> receive CHR-400 6
+  SKU       Name                   Category         Price   Qty  Reorder
+  CHR-400   Desk Chair             Furniture      $149.00     6        2
+inventory> price LMP-420 29.95
+  SKU       Name                   Category         Price   Qty  Reorder
+  LMP-420   Desk Lamp              Furniture       $29.95     8        4
+inventory> move MUG-600 Apparel
+  SKU       Name                   Category         Price   Qty  Reorder
+  MUG-600   Coffee Mug             Apparel         $12.95    40       15
+inventory> rename HDM-220 "HDMI Cable 10ft"
+  SKU       Name                   Category         Price   Qty  Reorder
+  HDM-220   HDMI Cable 10ft        Electronics     $12.00    45       15
+inventory> add USB-900 "USB Flash Drive 64GB" Electronics 14.99 30 10
+  SKU       Name                   Category         Price   Qty  Reorder
+  USB-900   USB Flash Drive 64GB   Electronics     $14.99    30       10
+inventory> remove CAB-440
+  removed CAB-440
+inventory> value
+  25 products, total value $30,122.70
+
+=== 4. Low-stock report (indexed min-heap, most urgent first) ===
+inventory> lowstock
+  SKU       Name                   Category         Price   Qty  Reorder
+  MOU-200   Wireless Mouse         Electronics     $24.50     3       10
+  BTL-610   Water Bottle           Gifts           $24.00     6       10
+  TAP-360   Packing Tape           Office           $4.99    12       15
+inventory> sell NBK-310 25
+  SKU       Name                   Category         Price   Qty  Reorder
+  NBK-310   Notebook               Office           $3.25    35       40
+inventory> lowstock
+  SKU       Name                   Category         Price   Qty  Reorder
+  MOU-200   Wireless Mouse         Electronics     $24.50     3       10
+  NBK-310   Notebook               Office           $3.25    35       40
+  BTL-610   Water Bottle           Gifts           $24.00     6       10
+  TAP-360   Packing Tape           Office           $4.99    12       15
+
+=== 5. Edge cases and error handling (nothing changes after an error) ===
+inventory> value
+  25 products, total value $30,041.45
+inventory> sell CHR-400 99
+Error: insufficient stock for CHR-400: have 6, need 99
+inventory> get NOPE-000
+Error: SKU 'NOPE-000' not found
+inventory> price LAP-100 -5
+Error: price cannot be negative, got '-5'
+inventory> price LAP-100 9.999
+Error: price cannot have fractions of a cent, got '9.999'
+inventory> add LAP-100 Duplicate Electronics 1.00 1
+Error: SKU 'LAP-100' already exists
+inventory> add BAD-001 Widget
+Usage: add SKU "NAME" CATEGORY PRICE QTY [REORDER]
+inventory> sell PEN-300 two
+Usage: sell SKU QTY
+inventory> range 50 10
+Error: low (50.00) is greater than high (10.00)
+inventory> find ""
+Error: search prefix is required
+inventory> category Nonexistent
+  no products in 'Nonexistent'
+inventory> load data/missing_file.csv
+Error: [Errno 2] No such file or directory: 'data/missing_file.csv'
+inventory> value
+  25 products, total value $30,041.45
+
+=== 6. Batch of stock movements with bad rows (reject-and-continue) ===
+inventory> movements data/movements.csv
+    line 9: change must be a whole number, got 'two' (not applied)
+    line 11: sku is required (not applied)
+    line 13: change must be a whole number, got '1.5' (not applied)
+  7 succeeded, 2 failed
+    line 7: SKU 'XYZ-999' not found
+    line 8: insufficient stock for TAP-360: have 12, need 20
+
+=== 7. Same file again as one all-or-nothing transaction (rolled back) ===
+inventory> value
+  25 products, total value $29,513.12
+inventory> movements data/movements.csv all
+    line 9: change must be a whole number, got 'two' (not applied)
+    line 11: sku is required (not applied)
+    line 13: change must be a whole number, got '1.5' (not applied)
+  0 succeeded, 1 failed (batch rolled back)
+    line 3: insufficient stock for NBK-310: have 10, need 25
+inventory> value
+  25 products, total value $29,513.12
+
+=== 8. Import a file with bad rows, then check every index agrees ===
+inventory> load data/products_with_errors.csv
+  2 succeeded, 5 failed
+    line 3: sku is required
+    line 4: price must be a number, got 'abc'
+    line 5: quantity cannot be negative, got -3
+    line 6: price cannot have fractions of a cent, got '2.005'
+    row: SKU 'PEN-300' already exists
+inventory> verify
+  all indexes consistent
