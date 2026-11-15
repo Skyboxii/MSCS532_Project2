@@ -43,6 +43,7 @@ def snapshot(inv):
         [(c, [p.sku for p in inv.products_in_category(c)]) for c in inv.categories()],
         [p.sku for p in inv.products_in_price_range(0, 1000)],
         [p.sku for p in inv.low_stock()],
+        [p.sku for p in inv.search_by_name("b")],
         inv.total_value,
         len(inv),
     )
@@ -55,6 +56,7 @@ OPERATIONS = {
     "update_price": lambda inv: inv.update_price("A", "99.99"),
     "change_category": lambda inv: inv.change_category("A", "Shared"),
     "set_reorder_point": lambda inv: inv.set_reorder_point("C", 20),
+    "rename_product": lambda inv: inv.rename_product("B", "Bravo Deluxe"),
 }
 
 TARGETS = [
@@ -62,6 +64,7 @@ TARGETS = [
     ("_by_price", "insert"), ("_by_price", "remove"),
     ("_categories", "put"), ("_categories", "remove"),
     ("_stock", "push"), ("_stock", "remove"), ("_stock", "update"),
+    ("_by_name", "insert"), ("_by_name", "remove"),
     (None, "_change_value"),        # fails after every index has been updated
 ]
 
@@ -81,9 +84,10 @@ class TestRollback(unittest.TestCase):
                         injected += 1
                         self.assertEqual(snapshot(inv), before)
                     self.assertEqual(inv.verify_integrity(), [])
-        # Index steps per operation: add 5, remove 5, adjust_quantity 3, update_price 4,
-        # change_category 2 (adding to an existing set is not a HashTable call), set_reorder_point 2.
-        self.assertEqual(injected, 21)
+        # Index steps per operation: add 6, remove 6, adjust_quantity 3, update_price 4,
+        # change_category 2 (adding to an existing set is not a HashTable call),
+        # set_reorder_point 2, rename_product 3.
+        self.assertEqual(injected, 26)
 
     def test_nested_transaction_rolls_back_as_a_whole(self):
         inv = build()
