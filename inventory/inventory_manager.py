@@ -8,10 +8,13 @@ InventoryManager: a facade that keeps four indexes consistent.
     _stock      IndexedMinHeap sku -> quantity - reorder O(log n) quantity changes,
                                                          O(k) low-stock report
 
-Every mutating method updates all affected indexes before returning, so
-callers always see a consistent view.
+Every mutating method runs inside a transaction: each index change is
+recorded with the action that reverses it, and if anything raises partway
+through, the recorded changes are undone in reverse order.  Callers
+therefore see either the whole update or none of it.
 """
 
+from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 
@@ -22,6 +25,23 @@ from .product import Product, to_count, to_price
 from .skip_list import SkipList
 
 
+class _UndoLog:
+    """The undo actions for the index changes made in one transaction."""
+
+    def __init__(self):
+        self._undo = []
+
+    def do(self, apply, undo):
+        """Run apply(); remember undo() only if apply() succeeded."""
+        apply()
+        self._undo.append(undo)
+
+    def rollback(self):
+        """Reverse every recorded change, newest first."""
+        while self._undo:
+            self._undo.pop()()
+
+
 class InventoryManager:
 
     def __init__(self, seed=None):
@@ -30,6 +50,25 @@ class InventoryManager:
         self._categories = HashTable()
         self._stock = IndexedMinHeap()
         self._total_value = Decimal("0")    # running sum of price * quantity
+        self._tx = None                     # the active _UndoLog, if any
+
+    @contextmanager
+    def _atomic(self):
+        """
+        All-or-nothing block.  A nested _atomic() joins the outer transaction,
+        so a batch wrapped in one _atomic() is rolled back as a whole.
+        """
+        if self._tx is not None:
+            yield self._tx
+            return
+        self._tx = _UndoLog()
+        try:
+            yield self._tx
+        except BaseException:
+            self._tx.rollback()
+            raise
+        finally:
+            self._tx = None
 
     # -- create / delete ------------------------------------------------------
 
@@ -39,21 +78,28 @@ class InventoryManager:
             raise ValidationError(f"expected a Product, got {type(product).__name__}")
         if product.sku in self._products:
             raise DuplicateSKUError(product.sku)
-        self._products.put(product.sku, product)
-        self._by_price.insert((product.price, product.sku))
-        self._category_set(product.category).add(product.sku)
-        self._stock.push(product.sku, product.stock_gap)
-        self._total_value += product.price * product.quantity
+        p = product
+        with self._atomic() as tx:
+            tx.do(lambda: self._products.put(p.sku, p), lambda: self._products.remove(p.sku))
+            tx.do(lambda: self._by_price.insert((p.price, p.sku)),
+                  lambda: self._by_price.remove((p.price, p.sku)))
+            tx.do(lambda: self._category_add(p.category, p.sku),
+                  lambda: self._category_discard(p.category, p.sku))
+            tx.do(lambda: self._stock.push(p.sku, p.stock_gap), lambda: self._stock.remove(p.sku))
+            self._change_value(tx, p.price * p.quantity)
 
     def remove_product(self, sku):
         """Remove a product from every index and return it. O(log n) expected."""
-        product = self._require(sku)
-        self._products.remove(sku)
-        self._by_price.remove((product.price, sku))
-        self._discard_from_category(product.category, sku)
-        self._stock.remove(sku)
-        self._total_value -= product.price * product.quantity
-        return product
+        p = self._require(sku)
+        with self._atomic() as tx:
+            tx.do(lambda: self._products.remove(p.sku), lambda: self._products.put(p.sku, p))
+            tx.do(lambda: self._by_price.remove((p.price, p.sku)),
+                  lambda: self._by_price.insert((p.price, p.sku)))
+            tx.do(lambda: self._category_discard(p.category, p.sku),
+                  lambda: self._category_add(p.category, p.sku))
+            tx.do(lambda: self._stock.remove(p.sku), lambda: self._stock.push(p.sku, p.stock_gap))
+            self._change_value(tx, -p.price * p.quantity)
+        return p
 
     # -- dynamic updates ------------------------------------------------------
 
@@ -64,43 +110,53 @@ class InventoryManager:
         """
         if isinstance(delta, bool) or not isinstance(delta, int):
             raise ValidationError(f"quantity change must be a whole number, got {delta!r}")
-        product = self._require(sku)
-        new_qty = product.quantity + delta
-        if new_qty < 0:
-            raise InsufficientStockError(sku, product.quantity, -delta)
-        updated = replace(product, quantity=new_qty)
-        self._products.put(sku, updated)
-        self._stock.update(sku, updated.stock_gap)
-        self._total_value += product.price * delta
-        return updated
+        old = self._require(sku)
+        if old.quantity + delta < 0:
+            raise InsufficientStockError(sku, old.quantity, -delta)
+        new = replace(old, quantity=old.quantity + delta)
+        with self._atomic() as tx:
+            self._replace_record(tx, old, new)
+            tx.do(lambda: self._stock.update(sku, new.stock_gap),
+                  lambda: self._stock.update(sku, old.stock_gap))
+            self._change_value(tx, old.price * delta)
+        return new
 
     def update_price(self, sku, new_price):
         """Change a price and move the product in the price index. O(log n) expected."""
-        product = self._require(sku)
-        updated = replace(product, price=new_price)
-        self._by_price.remove((product.price, sku))
-        self._by_price.insert((updated.price, sku))
-        self._products.put(sku, updated)
-        self._total_value += (updated.price - product.price) * product.quantity
-        return updated
+        old = self._require(sku)
+        new = replace(old, price=new_price)     # validates the price before anything changes
+        with self._atomic() as tx:
+            tx.do(lambda: self._by_price.remove((old.price, sku)),
+                  lambda: self._by_price.insert((old.price, sku)))
+            tx.do(lambda: self._by_price.insert((new.price, sku)),
+                  lambda: self._by_price.remove((new.price, sku)))
+            self._replace_record(tx, old, new)
+            self._change_value(tx, (new.price - old.price) * old.quantity)
+        return new
 
     def change_category(self, sku, new_category):
         """Move a product to another category. O(1) average."""
-        product = self._require(sku)
-        if new_category == product.category:
-            return product
-        updated = replace(product, category=new_category)
-        self._discard_from_category(product.category, sku)
-        self._category_set(new_category).add(sku)
-        self._products.put(sku, updated)
-        return updated
+        old = self._require(sku)
+        new = replace(old, category=new_category)
+        if new.category == old.category:        # compare after normalization
+            return old
+        with self._atomic() as tx:
+            tx.do(lambda: self._category_discard(old.category, sku),
+                  lambda: self._category_add(old.category, sku))
+            tx.do(lambda: self._category_add(new.category, sku),
+                  lambda: self._category_discard(new.category, sku))
+            self._replace_record(tx, old, new)
+        return new
 
     def set_reorder_point(self, sku, reorder_point):
         """Change when a product should be reordered. O(log n)."""
-        updated = replace(self._require(sku), reorder_point=reorder_point)
-        self._products.put(sku, updated)
-        self._stock.update(sku, updated.stock_gap)
-        return updated
+        old = self._require(sku)
+        new = replace(old, reorder_point=reorder_point)
+        with self._atomic() as tx:
+            self._replace_record(tx, old, new)
+            tx.do(lambda: self._stock.update(sku, new.stock_gap),
+                  lambda: self._stock.update(sku, old.stock_gap))
+        return new
 
     # -- queries --------------------------------------------------------------
 
@@ -163,6 +219,46 @@ class InventoryManager:
     def __len__(self):
         return len(self._products)
 
+    # -- integrity ------------------------------------------------------------
+
+    def verify_integrity(self):
+        """
+        Cross-check every index against the product table. O(n log n).
+
+        Returns a list of problems; an empty list means all indexes agree.
+        Used by the tests after every failure-injection scenario, and by the
+        CLI's `verify` command.
+        """
+        problems = []
+        products = dict(self._products.items())
+        n = len(products)
+        if len(self._by_price) != n or len(self._stock) != n:
+            problems.append(f"index sizes differ: products={n}, price={len(self._by_price)}, "
+                            f"stock={len(self._stock)}")
+        keys = [key for key, _ in self._by_price]
+        if any(a >= b for a, b in zip(keys, keys[1:])):
+            problems.append("price index is out of order")
+        if set(keys) != {(p.price, s) for s, p in products.items()}:
+            problems.append("price index does not match product prices")
+        member_count = 0
+        for category, skus in self._categories.items():
+            if not skus:
+                problems.append(f"empty category {category!r} was not removed")
+            for s in skus:
+                member_count += 1
+                if s not in products or products[s].category != category:
+                    problems.append(f"{s!r} is listed under the wrong category {category!r}")
+        if member_count != n:
+            problems.append(f"category index lists {member_count} products, expected {n}")
+        for s, p in products.items():
+            if s not in self._stock or self._stock.priority_of(s) != p.stock_gap:
+                problems.append(f"stock index is wrong for {s!r}")
+        problems.extend(self._stock.check_invariants())
+        expected = sum((p.price * p.quantity for p in products.values()), Decimal("0"))
+        if expected != self._total_value:
+            problems.append(f"total value is {self._total_value}, expected {expected}")
+        return problems
+
     # -- helpers --------------------------------------------------------------
 
     def _require(self, sku):
@@ -172,15 +268,28 @@ class InventoryManager:
             raise ProductNotFoundError(sku)
         return product
 
-    def _category_set(self, category):
+    def _replace_record(self, tx, old, new):
+        tx.do(lambda: self._products.put(new.sku, new), lambda: self._products.put(old.sku, old))
+
+    def _change_value(self, tx, delta):
+        def add(amount):
+            self._total_value += amount
+        tx.do(lambda: add(delta), lambda: add(-delta))
+
+    # Each helper below makes exactly ONE mutation.  An undo step is recorded
+    # only after its action succeeds, so an action that changed two things
+    # and then failed halfway would leave the first change un-undoable.
+
+    def _category_add(self, category, sku):
         skus = self._categories.get(category)
         if skus is None:
-            skus = set()
-            self._categories.put(category, skus)
-        return skus
+            self._categories.put(category, {sku})       # new category, created with its member
+        else:
+            skus.add(sku)
 
-    def _discard_from_category(self, category, sku):
+    def _category_discard(self, category, sku):
         skus = self._categories[category]
-        skus.discard(sku)
-        if not skus:                    # drop empty categories
-            self._categories.remove(category)
+        if skus == {sku}:
+            self._categories.remove(category)           # last member: drop the whole category
+        else:
+            skus.discard(sku)

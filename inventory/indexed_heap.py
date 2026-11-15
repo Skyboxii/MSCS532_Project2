@@ -115,6 +115,21 @@ class IndexedMinHeap:
     def priority_of(self, item):
         return self._heap[self._pos[item]][0]
 
+    def check_invariants(self):
+        """Return a list of problems with heap order or the position map (empty = OK). O(n)."""
+        problems = []
+        for i in range(1, len(self._heap)):
+            if self._heap[i] < self._heap[(i - 1) // 2]:
+                problems.append(f"heap order violated at index {i}")
+                break
+        if len(self._pos) != len(self._heap):
+            problems.append("position map size does not match heap size")
+        for i, (_, item) in enumerate(self._heap):
+            if self._pos.get(item) != i:
+                problems.append(f"position map is wrong for {item!r}")
+                break
+        return problems
+
     def __contains__(self, item):
         return item in self._pos
 
