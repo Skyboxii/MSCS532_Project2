@@ -1,0 +1,4 @@
+n,add_product_us,get_us,dict_lookup_us,adjust_quantity_us,update_price_us,price_range_10_us,price_range_avg_results,name_search_10_us,low_stock_us,low_stock_items,index_bytes_per_product
+1000,11.536,0.245,0.024,6.059,10.932,6.338,10.055,5.85,9.936,20,
+10000,12.804,0.233,0.034,7.733,13.261,7.64,10.28,4.739,10.031,20,725.272
+100000,19.635,0.45,0.058,8.439,18.686,15.209,10.975,5.424,10.55,20,

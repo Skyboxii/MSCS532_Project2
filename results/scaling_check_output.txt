@@ -1,0 +1,4 @@
+Power throttling disabled: True
+n=  1,000  add_product=11.54  get=0.24  dict_lookup=0.02  adjust_quantity=6.06  update_price=10.93  price_range_10=6.34  price_range_avg_results=10.05  name_search_10=5.85  low_stock=9.94  low_stock_items=20
+n= 10,000  add_product=12.80  get=0.23  dict_lookup=0.03  adjust_quantity=7.73  update_price=13.26  price_range_10=7.64  price_range_avg_results=10.28  name_search_10=4.74  low_stock=10.03  low_stock_items=20  index_bytes_per_product=725.27
+n=100,000  add_product=19.64  get=0.45  dict_lookup=0.06  adjust_quantity=8.44  update_price=18.69  price_range_10=15.21  price_range_avg_results=10.97  name_search_10=5.42  low_stock=10.55  low_stock_items=20
